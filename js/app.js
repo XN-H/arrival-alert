@@ -99,6 +99,7 @@ var PRIORITY = { PANIC: 0, SAFETY: 1, CONFIRM: 2, NORMAL: 3 };
 var speechQueue = [];
 var speaking = false;
 var currentSpeechText = '';   // 正在播报的文本（用于过滤麦克风听到的"回声"）
+var currentSpeechKind = '';   // 正在播报的类型：'guide'(界面说明) / 'reminder'(提醒) / 'normal'
 
 var activeLogId = 'bus-log';
 function currentLogEl() { return document.getElementById(activeLogId); }
@@ -114,8 +115,9 @@ function addLog(listEl, text) {
   listEl.insertBefore(li, listEl.firstChild);
 }
 
-/** 统一播报入口。priority 越小越紧急。onDone 在该条播完（或被取消）后回调 */
-function speak(text, priority, onDone) {
+/** 统一播报入口。priority 越小越紧急。onDone 在该条播完（或被取消）后回调。
+ *  kind：'guide'=界面说明（松手可停）、'reminder'=提醒语音（松手不停）、'normal' */
+function speak(text, priority, onDone, kind) {
   if (priority === undefined) priority = PRIORITY.NORMAL;
   addLog(currentLogEl(), text);
   if (!('speechSynthesis' in window)) {
@@ -128,11 +130,11 @@ function speak(text, priority, onDone) {
     speechQueue = [];
     speaking = false;
     try { window.speechSynthesis.cancel(); } catch (e) { }
-    speechQueue.push({ text: text, priority: priority, onDone: onDone });
+    speechQueue.push({ text: text, priority: priority, onDone: onDone, kind: kind });
     pumpSpeech();
     return;
   }
-  speechQueue.push({ text: text, priority: priority, onDone: onDone });
+  speechQueue.push({ text: text, priority: priority, onDone: onDone, kind: kind });
   speechQueue.sort(function (a, b) { return a.priority - b.priority; });
   pumpSpeech();
 }
@@ -143,11 +145,13 @@ function pumpSpeech() {
   var item = speechQueue.shift();
   speaking = true;
   currentSpeechText = item.text;
+  currentSpeechKind = item.kind || 'normal';
   if (item.priority <= PRIORITY.SAFETY) beep('alert'); else beep('start');
 
   var done = function () {
     speaking = false;
     currentSpeechText = '';
+    currentSpeechKind = '';
     if (item.onDone) { try { item.onDone(); } catch (e) { } }
     pumpSpeech();
   };
@@ -170,6 +174,7 @@ function silence() {
   speechQueue = [];
   speaking = false;
   currentSpeechText = '';
+  currentSpeechKind = '';
   try { window.speechSynthesis.cancel(); } catch (e) { }
   maybeResumeRecognition();
 }
@@ -455,34 +460,39 @@ function handleBusStop(k) {
   if (!busState.boarded) {
     if (k === bi) {
       busState.boarded = true;
-      busState.lastText = '车已到站，' + busStopName(bi) + '，请上车，注意台阶。';
-      speak(busState.lastText, PRIORITY.SAFETY);
+      busState.lastText = '上车提醒：车已到站，' + busStopName(bi) + '，请上车，注意台阶。';
+      speak(busState.lastText, PRIORITY.SAFETY, null, 'reminder');
       buzz([200, 100, 200]);
-      updateBusStatus('车已到站：' + busStopName(bi), '请上车');
+      updateBusStatus('上车提醒 · 车已到站：' + busStopName(bi), '请上车');
     } else if (k < bi) {
       var gap = bi - k;
-      busState.lastText = MOCK_BUS_ROUTE.line + ' 还有 ' + gap + ' 站到达 ' + busStopName(bi) + '，请准备上车。';
-      speak(busState.lastText);
-      updateBusStatus('还有 ' + gap + ' 站到达 ' + busStopName(bi), '请准备上车');
+      busState.lastText = '还有 ' + gap + ' 站到达上车站' + busStopName(bi) + '，请准备上车。';
+      speak(busState.lastText, PRIORITY.NORMAL, null, 'reminder');
+      updateBusStatus('还有 ' + gap + ' 站到达上车站 ' + busStopName(bi), '请准备上车');
     }
     return;
   }
 
   var gap2 = ai - k;
   if (gap2 <= 0) {
-    busState.lastText = '已到站，' + busStopName(ai) + '，请下车，请注意脚下台阶。';
-    speak(busState.lastText, PRIORITY.SAFETY);
+    busState.lastText = '到站提醒：已到达终点站' + busStopName(ai) + '，请下车，请注意脚下台阶。提醒结束，祝您出行顺利。';
+    speak(busState.lastText, PRIORITY.SAFETY, null, 'reminder');
     buzz([300, 120, 300, 120, 300]);
-    updateBusStatus('已到站：' + busStopName(ai), '提醒结束，祝您出行顺利');
+    updateBusStatus('到站提醒 · 已到达：' + busStopName(ai), '提醒结束，祝您出行顺利');
     stopBus(true);
   } else if (gap2 === 2) {
-    busState.lastText = '还有 2 站到达 ' + busStopName(ai) + '，请准备下车。';
-    speak(busState.lastText);
-    updateBusStatus('还有 2 站到达 ' + busStopName(ai), '请准备下车');
+    busState.lastText = '还有 2 站到达下车站' + busStopName(ai) + '，请准备下车。';
+    speak(busState.lastText, PRIORITY.NORMAL, null, 'reminder');
+    updateBusStatus('还有 2 站到达下车站 ' + busStopName(ai), '请准备下车');
   } else if (gap2 === 1) {
-    busState.lastText = '下一站 ' + busStopName(ai) + '，请准备下车。';
-    speak(busState.lastText);
+    busState.lastText = '下一站' + busStopName(ai) + '，请准备下车。';
+    speak(busState.lastText, PRIORITY.NORMAL, null, 'reminder');
     updateBusStatus('下一站 ' + busStopName(ai), '请准备下车');
+  } else {
+    // 离下车站还远：每站都报一次，保证"一直有声音"
+    busState.lastText = '还有 ' + gap2 + ' 站到达下车站' + busStopName(ai) + '。';
+    speak(busState.lastText, PRIORITY.NORMAL, null, 'reminder');
+    updateBusStatus('还有 ' + gap2 + ' 站到达下车站 ' + busStopName(ai), '正在行驶');
   }
 }
 
@@ -499,7 +509,7 @@ function stopBus(silent) {
 /* ============================================================
  * ⑦ 打车提醒（目的地可变，路径动态生成）
  * ============================================================ */
-var taxiState = { running: false, timer: null, eta: 0, fast: false, lastText: '' };
+var taxiState = { running: false, timer: null, eta: 0, fast: false, lastText: '', phase: 'pickup' };
 var taxiDest = MOCK_PLACES[MOCK_TAXI_DEFAULT];
 
 function taxiTickMs() { return taxiState.fast ? UI_CONFIG.map.taxiFastTickMs : UI_CONFIG.map.taxiTickMs; }
@@ -516,30 +526,51 @@ function startTaxi() {
   stopTaxi(true);
   activeLogId = 'taxi-log';
   taxiState.eta = MOCK_TAXI.etaMinutes;
+  taxiState.phase = 'pickup';
   taxiState.running = true;
 
   var el = document.getElementById('taxi-status');
-  if (el) el.textContent = '司机还有 ' + taxiState.eta + ' 分钟到达';
+  if (el) el.textContent = '司机还有 ' + taxiState.eta + ' 分钟到达上车点';
 
-  taxiState.lastText = '已开始提醒。去' + taxiDest.name + '。' + MOCK_TAXI.driver + '，' + MOCK_TAXI.car + '，车牌 ' + MOCK_TAXI.plate + '，预计 ' + taxiState.eta + ' 分钟到达。';
+  taxiState.lastText = '已开始提醒。去' + taxiDest.name + '。' + MOCK_TAXI.driver + '，' + MOCK_TAXI.car + '，车牌 ' + MOCK_TAXI.plate + '，预计 ' + taxiState.eta + ' 分钟到达上车点。';
   speak(taxiState.lastText, PRIORITY.CONFIRM);
   setTaxiProgress(0);
 
   taxiState.timer = setInterval(function () {
     taxiState.eta -= 1;
-    var total = MOCK_TAXI.etaMinutes;
-    setTaxiProgress((total - Math.max(0, taxiState.eta)) / total);
-
     var st = document.getElementById('taxi-status');
+
+    /* —— 第一段：司机接驾 —— */
+    if (taxiState.phase === 'pickup') {
+      var totalA = MOCK_TAXI.etaMinutes;
+      setTaxiProgress((totalA - Math.max(0, taxiState.eta)) / totalA * 0.5);
+      if (taxiState.eta > 0) {
+        taxiState.lastText = '司机还有 ' + taxiState.eta + ' 分钟到达上车点。';
+        if (st) st.textContent = '司机还有 ' + taxiState.eta + ' 分钟到达上车点';
+        speak(taxiState.lastText, PRIORITY.NORMAL, null, 'reminder');
+      } else {
+        taxiState.lastText = '上车提醒：司机已到达上车点，车牌 ' + MOCK_TAXI.plate + '，请上车。';
+        if (st) st.textContent = '上车提醒 · 司机已到达，请上车';
+        speak(taxiState.lastText, PRIORITY.SAFETY, null, 'reminder');
+        buzz([200, 100, 200]);
+        taxiState.phase = 'trip';                 // 转入行程
+        taxiState.eta = MOCK_TAXI.tripMinutes;
+      }
+      return;
+    }
+
+    /* —— 第二段：行程中 —— */
+    var totalB = MOCK_TAXI.tripMinutes;
+    setTaxiProgress(0.5 + (totalB - Math.max(0, taxiState.eta)) / totalB * 0.5);
     if (taxiState.eta > 0) {
-      taxiState.lastText = '司机还有 ' + taxiState.eta + ' 分钟到达。';
-      if (st) st.textContent = '司机还有 ' + taxiState.eta + ' 分钟到达';
-      speak(taxiState.lastText);
+      taxiState.lastText = '正在前往' + taxiDest.name + '，还有 ' + taxiState.eta + ' 分钟。';
+      if (st) st.textContent = '正在前往 ' + taxiDest.name + '，还有 ' + taxiState.eta + ' 分钟';
+      speak(taxiState.lastText, PRIORITY.NORMAL, null, 'reminder');
     } else {
-      taxiState.lastText = '已到达目的地，' + taxiDest.name + '。车牌 ' + MOCK_TAXI.plate + '，请下车。';
-      if (st) st.textContent = '已到达 · ' + taxiDest.name;
-      speak(taxiState.lastText, PRIORITY.SAFETY);
-      buzz([300, 120, 300]);
+      taxiState.lastText = '到站提醒：已到达目的地' + taxiDest.name + '，请下车。';
+      if (st) st.textContent = '到站提醒 · 已到达 ' + taxiDest.name;
+      speak(taxiState.lastText, PRIORITY.SAFETY, null, 'reminder');
+      buzz([300, 120, 300, 120, 300]);
       stopTaxi(true);
     }
   }, taxiTickMs());
@@ -650,7 +681,7 @@ function pttStart() {
   startRecognition();
 
   // ② 再播报当前界面说明（若识别到指令会被打断）
-  speak(screenGuideText(), PRIORITY.CONFIRM);
+  speak(screenGuideText(), PRIORITY.CONFIRM, null, 'guide');
 }
 
 /** 启动/重启识别（持续模式，按住期间一直听） */
@@ -737,13 +768,13 @@ function onRecEnd() {
   setTimeout(function () { if (ptt.active && !ptt.rec && !speaking) startRecognition(); }, 300);
 }
 
-/** 松手：停止收音；若本次没执行过指令，顺手停掉界面说明（已触发的语音反馈会播完） */
+/** 松手：停止收音；只停"界面说明"，正在播的提醒语音会播完 */
 function pttStop() {
   if (!ptt.active) return;
   ptt.active = false;
   ptt.pendingRestart = false;
   try { if (ptt.rec) ptt.rec.stop(); } catch (e) { }
-  if (!ptt.acted) silence();
+  if (!ptt.acted && currentSpeechKind === 'guide') silence();   // 不误杀提醒播报
   setVoiceState('idle');
 }
 

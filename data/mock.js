@@ -95,7 +95,8 @@ var MOCK_TAXI = {
   startLng: 113.9860,
   midLat: 22.6075,
   midLng: 113.9905,
-  etaMinutes: 3
+  etaMinutes: 3,     // 司机接驾预计分钟数
+  tripMinutes: 2     // 上车后行程预计分钟数
 };
 
 /* ---------------- 打车可选目的地（站名 + 校园地点） ---------------- */

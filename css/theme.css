@@ -1,0 +1,63 @@
+/* ============================================================
+ * 到站了 · 主题变量（供后续 UI 优化者使用）
+ * ------------------------------------------------------------
+ * 这里的 CSS 变量与 js/app.js 顶部的 UI_CONFIG 一一对应。
+ * UI_CONFIG 会在页面加载时把这些值写入 :root，因此：
+ *   - 想临时调参：只改 app.js 的 UI_CONFIG
+ *   - 想彻底改视觉：改本文件的默认值 / 或按变量重写样式
+ * 业务逻辑（js/app.js）不依赖任何具体像素值，只依赖这些变量。
+ * ============================================================ */
+
+:root {
+  /* 品牌色（默认橙，呼应"橙光队"） */
+  --c-brand: #ea580c;
+  --c-brand-dark: #c2410c;
+  --c-brand-soft: #fff7ed;
+  --c-brand-soft-text: #c2410c;
+
+  /* 中性色 */
+  --c-text: #111827;
+  --c-text-sub: #6b7280;
+  --c-border: #e5e7eb;
+  --c-surface: #ffffff;
+  --c-page-bg: #eef0f3;
+
+  /* 手机壳 */
+  --phone-w: 375px;
+  --phone-h: 840px;
+  --phone-radius: 44px;
+  --phone-bezel: 12px;
+
+  /* 字号（无障碍：默认偏大） */
+  --fs-base: 16px;
+  --fs-title: 26px;
+  --fs-status: 24px;
+  --fs-btn: 17px;
+
+  /* 按钮 */
+  --btn-radius: 18px;
+  --btn-pad-y: 16px;
+
+  /* 地图 */
+  --map-h: 200px;
+
+  /* 动画 */
+  --anim-fast: .18s;
+}
+
+/* 高对比模式（由 app.js 给 body 加 .hc 类触发） */
+body.hc {
+  --c-text: #000000;
+  --c-text-sub: #1f2937;
+  --c-border: #111827;
+  --c-page-bg: #ffffff;
+  --c-brand-soft: #ffe8cc;
+}
+
+/* 大字号模式（由 app.js 给 body 加 .fs-large 触发） */
+body.fs-large {
+  --fs-base: 19px;
+  --fs-title: 30px;
+  --fs-status: 28px;
+  --fs-btn: 19px;
+}

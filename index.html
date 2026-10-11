@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>到站了 · 视障出行语音提醒</title>
+  <script src="vendor/tailwind.js"></script>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <link rel="stylesheet" href="css/theme.css" />
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { sans: ['system-ui', '-apple-system', 'Microsoft YaHei', 'PingFang SC', 'sans-serif'] } } }
+    };
+  </script>
+  <style>
+    html { height: 100%; }
+    body {
+      margin: 0;
+      min-height: 100%;
+      padding: 28px 16px 44px;   /* 顶部对齐 + 可滚动，避免内容超出视口时被裁切 */
+      box-sizing: border-box;
+      font-family: var(--font-sans, system-ui, -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif);
+      font-size: var(--fs-base);
+      color: var(--c-text);
+      background: radial-gradient(1200px 600px at 50% -10%, var(--c-brand-soft) 0%, #f6f7f9 45%, var(--c-page-bg) 100%);
+    }
+
+    /* ---------- 舞台：控制台 | 手机 | 音量键 ---------- */
+    .stage { display: flex; align-items: center; justify-content: center; gap: 28px; flex-wrap: wrap; }
+
+    /* 外置演示控制台（纯演示装饰，但可点击） */
+    .console {
+      width: 220px; padding: 18px; border-radius: 22px;
+      background: rgba(255,255,255,.85); border: 1px solid var(--c-border);
+      box-shadow: 0 12px 30px rgba(17,24,39,.08); backdrop-filter: blur(6px);
+    }
+    .console h2 { margin: 0 0 4px; font-size: 15px; font-weight: 800; letter-spacing: .5px; }
+    .console p.cap { margin: 0 0 14px; font-size: 11px; color: var(--c-text-sub); }
+    .cbtn {
+      width: 100%; display: flex; align-items: center; gap: 10px;
+      padding: 14px 14px; margin-bottom: 10px; border: 0; cursor: pointer;
+      border-radius: 14px; font-size: 15px; font-weight: 700; text-align: left;
+      transition: transform var(--anim-fast), background var(--anim-fast);
+    }
+    .cbtn:active { transform: scale(.97); }
+    .cbtn-primary { background: var(--c-brand); color: #fff; }
+    .cbtn-dark { background: #1f2937; color: #fff; }
+    .cbtn-ghost { background: #fff; color: #374151; border: 2px solid var(--c-border); }
+    .cbtn-danger { background: #dc2626; color: #fff; }
+    .cbtn .ico { font-size: 20px; }
+
+    /* ---------- 设备 + 音量键 ---------- */
+    .device-wrap { position: relative; }
+    .phone {
+      width: var(--phone-w); height: var(--phone-h);
+      border-radius: var(--phone-radius); border: var(--phone-bezel) solid #111827;
+      background: var(--c-surface); position: relative; overflow: hidden;
+      box-shadow: 0 24px 60px rgba(17,24,39,.28);
+      display: flex; flex-direction: column;
+    }
+    .notch {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 150px; height: 24px; background: #111827;
+      border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; z-index: 20;
+    }
+    .phone-body { flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* 手机壳右侧物理音量键 */
+    .vol-keys {
+      position: absolute; right: -16px; top: 190px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .volkey {
+      width: 34px; height: 96px; border-radius: 10px; cursor: pointer;
+      background: linear-gradient(180deg, #4b5563, #1f2937);
+      color: #fff; border: 0; font-size: 12px; font-weight: 700;
+      line-height: 1.35; letter-spacing: 2px; writing-mode: vertical-rl; text-orientation: mixed;
+      box-shadow: 2px 3px 8px rgba(0,0,0,.35);
+      transition: transform var(--anim-fast), filter var(--anim-fast);
+    }
+    #vol-down { background: linear-gradient(180deg, #b91c1c, #7f1d1d); }
+    .volkey:active { transform: translateX(-2px) scale(.97); filter: brightness(1.2); }
+    .volkey.flash { filter: brightness(1.6); }
+
+    /* 组合键提示（手机下方） */
+    .keyhints { display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center; margin-top: 22px; }
+    .kbd {
+      display: inline-block; min-width: 20px; padding: 2px 7px; margin: 0 2px;
+      font-size: 12px; font-weight: 700; color: #374151;
+      background: #fff; border: 1px solid #d1d5db; border-bottom-width: 3px; border-radius: 6px;
+    }
+
+    /* 应用内元素 */
+    #bus-map, #taxi-map { height: var(--map-h); width: 100%; background: #e5e7eb; }
+    .leaflet-container { font: inherit; }
+    .bus-pin { font-size: 22px; line-height: 22px; text-align: center; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+    .btn-primary { background: var(--c-brand); color: #fff; }
+    .btn-primary:active { background: var(--c-brand-dark); transform: scale(.98); }
+    .btn-plain:active { transform: scale(.98); }
+    .log-item { border-left: 3px solid #fdba74; }
+    .dot-on { background: #16a34a; }
+    .live { animation: live 1.4s ease-in-out infinite; }
+    @keyframes live { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+    /* 响应式：窄屏时控制台移到手机上方 */
+    @media (max-width: 760px) {
+      .stage { gap: 18px; }
+      .console { width: 340px; }
+      .vol-keys { right: -14px; }
+      .phone { --phone-h: 640px; }
+    }
+  </style>
+</head>
+
+<body class="flex flex-col items-center">
+
+  <header class="mb-5 text-center max-w-2xl">
+    <h1 class="font-bold" style="font-size: var(--fs-title);">到站了 · 视障出行语音提醒</h1>
+    <p class="mt-1" style="font-size: 13px; color: var(--c-text-sub);">上车会提醒、下车会提醒、打车到站也会提醒 —— 大字号 / 大按钮 / 语音播报 / 可离线</p>
+  </header>
+
+  <div class="stage">
+
+    <!-- ============ 外置演示控制台（纯演示装饰） ============ -->
+    <aside class="console" aria-label="演示控制台">
+      <h2>演示控制台</h2>
+      <p class="cap">点击即生成车辆并开始模拟</p>
+
+      <button id="c-bus" class="cbtn cbtn-primary"><span class="ico">🚌</span> 开始等公交</button>
+      <button id="c-taxi" class="cbtn cbtn-dark"><span class="ico">🚕</span> 开始打车</button>
+      <button id="c-stop" class="cbtn cbtn-ghost"><span class="ico">⏹</span> 停止</button>
+      <button id="c-reset" class="cbtn cbtn-ghost"><span class="ico">↺</span> 重置</button>
+      <button id="c-panic" class="cbtn cbtn-danger"><span class="ico">🚨</span> 急停</button>
+      <button id="c-help" class="cbtn cbtn-ghost" style="margin-bottom:14px;"><span class="ico">❓</span> 帮助</button>
+
+      <div id="voice-hint" style="font-size:12px;color:var(--c-text-sub);background:#f3f4f6;border-radius:10px;padding:9px 11px;line-height:1.5;">长按「音量+ / 键盘 +」：先说明当前界面，再听你说话</div>
+    </aside>
+
+    <!-- ============ 手机 ============ -->
+    <div class="device-wrap">
+      <div class="phone">
+        <div class="notch"></div>
+        <div class="phone-body">
+
+          <!-- 首页 -->
+          <section id="view-home" class="view active px-5 pt-12 pb-6">
+            <div class="flex items-center gap-2">
+              <span class="text-3xl">🚏</span>
+              <div>
+                <div class="text-xl font-bold">到站了</div>
+                <div class="text-xs" style="color: var(--c-text-sub);">让每一次出门都听得见</div>
+              </div>
+            </div>
+            <p class="mt-5 text-sm leading-6" style="color: var(--c-text-sub);">
+              选择出行方式，手机用大字和语音告诉你：<br />什么时候该<b>上车</b>、什么时候该<b>下车</b>。
+            </p>
+            <button id="go-bus" class="btn-primary mt-6 w-full rounded-2xl py-6 text-left px-5 transition">
+              <div class="text-2xl font-bold">🚌 公交到站提醒</div>
+              <div class="text-sm opacity-90 mt-1">上车 + 下车 双提醒（核心功能）</div>
+            </button>
+            <button id="go-taxi" class="btn-plain mt-4 w-full rounded-2xl py-5 text-left px-5 bg-white border-2 transition" style="border-color: var(--c-border);">
+              <div class="text-xl font-bold">🚕 打车到站提醒</div>
+              <div class="text-sm mt-1" style="color: var(--c-text-sub);">司机还有几分钟、车牌是多少</div>
+            </button>
+            <div class="mt-6 rounded-xl p-4 text-xs leading-5" style="background: var(--c-brand-soft); color: var(--c-brand-soft-text);">
+              🔊 语音由浏览器本地合成，不需要联网，也不需要装 App。
+            </div>
+          </section>
+
+          <!-- 公交页 -->
+          <section id="view-bus" class="view">
+            <div class="sticky top-0 z-10 px-4 py-3 flex items-center gap-3 border-b" style="background: rgba(255,255,255,.95); backdrop-filter: blur(6px); border-color: var(--c-border);">
+              <button data-back class="btn-plain text-2xl leading-none px-2 py-1 rounded-lg" aria-label="返回">‹</button>
+              <div class="font-bold text-lg">公交到站提醒</div>
+              <div class="ml-auto flex items-center gap-1 text-xs" style="color: var(--c-text-sub);">
+                <span id="voice-dot" class="dot-on inline-block w-2 h-2 rounded-full"></span>语音
+              </div>
+            </div>
+
+            <div id="bus-map"></div>
+
+            <div class="px-4 pt-4">
+              <div class="rounded-2xl text-white p-5" style="background: var(--c-brand);">
+                <div class="text-sm opacity-90"><span id="bus-line">37路</span> · <span id="bus-dir">塘朗地铁站 → 塘朗山公园</span></div>
+                <div id="bus-status" class="mt-2 font-bold leading-snug" style="font-size: var(--fs-status);">点击下方「开始提醒」</div>
+                <div id="bus-sub" class="mt-2 text-sm opacity-90">共 8 站 · 将播报上车与下车提醒</div>
+              </div>
+
+              <div class="mt-4 grid grid-cols-2 gap-3">
+                <label class="block">
+                  <span class="text-xs" style="color: var(--c-text-sub);">我要在哪站上车</span>
+                  <select id="sel-board" class="mt-1 w-full rounded-xl border-2 px-3 py-3 bg-white" style="font-size: var(--fs-base); border-color: var(--c-border);"></select>
+                </label>
+                <label class="block">
+                  <span class="text-xs" style="color: var(--c-text-sub);">我要在哪站下车</span>
+                  <select id="sel-alight" class="mt-1 w-full rounded-xl border-2 px-3 py-3 bg-white" style="font-size: var(--fs-base); border-color: var(--c-border);"></select>
+                </label>
+              </div>
+              <p id="sel-error" class="hidden mt-2 text-sm text-red-600"></p>
+
+              <div class="mt-4 grid grid-cols-2 gap-3">
+                <button id="btn-start" class="btn-primary rounded-2xl font-bold transition" style="padding: var(--btn-pad-y) 0; font-size: var(--fs-btn);">▶ 开始提醒</button>
+                <button id="btn-stop" class="btn-plain rounded-2xl font-bold bg-gray-100 text-gray-700 transition" style="padding: var(--btn-pad-y) 0; font-size: var(--fs-btn);" disabled>⏸ 停止</button>
+              </div>
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                <button id="btn-replay" class="btn-plain rounded-2xl py-3 font-semibold bg-white border-2 transition" style="border-color: var(--c-border); font-size: var(--fs-base);">🔊 再播报一次</button>
+                <button id="btn-speed" class="btn-plain rounded-2xl py-3 font-semibold bg-white border-2 transition" style="border-color: var(--c-border); font-size: var(--fs-base);">⏩ 加速演示</button>
+              </div>
+
+              <div class="mt-5">
+                <div class="text-xs mb-2" style="color: var(--c-text-sub);">播报记录</div>
+                <ul id="bus-log" class="space-y-2" style="font-size: var(--fs-base); color: var(--c-text-sub);">
+                  <li class="log-item log-empty pl-3 py-1">（暂无播报）</li>
+                </ul>
+              </div>
+              <div class="h-6"></div>
+            </div>
+          </section>
+
+          <!-- 打车页 -->
+          <section id="view-taxi" class="view">
+            <div class="sticky top-0 z-10 px-4 py-3 flex items-center gap-3 border-b" style="background: rgba(255,255,255,.95); backdrop-filter: blur(6px); border-color: var(--c-border);">
+              <button data-back class="btn-plain text-2xl leading-none px-2 py-1 rounded-lg" aria-label="返回">‹</button>
+              <div class="font-bold text-lg">打车到站提醒</div>
+            </div>
+
+            <div id="taxi-map"></div>
+
+            <div class="px-4 pt-4">
+              <div class="rounded-2xl bg-gray-900 text-white p-5">
+                <div id="taxi-status" class="font-bold leading-snug" style="font-size: var(--fs-status);">点击下方「开始提醒」</div>
+                <div class="mt-3 flex items-center gap-3 text-sm opacity-90">
+                  <span id="taxi-plate" class="px-2 py-1 rounded bg-white/15 font-mono tracking-wider">粤B·D8888</span>
+                  <span id="taxi-car">白色比亚迪秦 · 李师傅</span>
+                </div>
+              </div>
+
+              <div class="mt-4 grid grid-cols-2 gap-3">
+                <button id="taxi-start" class="btn-primary rounded-2xl font-bold transition" style="padding: var(--btn-pad-y) 0; font-size: var(--fs-btn);">▶ 开始提醒</button>
+                <button id="taxi-replay" class="btn-plain rounded-2xl font-bold bg-white border-2 transition" style="padding: var(--btn-pad-y) 0; font-size: var(--fs-btn); border-color: var(--c-border); color: #374151;">🔊 再播报一次</button>
+              </div>
+
+              <div class="mt-5">
+                <div class="text-xs mb-2" style="color: var(--c-text-sub);">播报记录</div>
+                <ul id="taxi-log" class="space-y-2" style="font-size: var(--fs-base); color: var(--c-text-sub);">
+                  <li class="log-item log-empty pl-3 py-1">（暂无播报）</li>
+                </ul>
+              </div>
+              <div class="h-6"></div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- 手机壳右侧物理音量键 -->
+      <div class="vol-keys">
+        <button id="vol-up" class="volkey" aria-label="音量加：长按说话，松开执行">按住说话</button>
+        <button id="vol-down" class="volkey" aria-label="音量减：急停">急停</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 组合键提示 -->
+  <div class="keyhints">
+    <span style="font-size:12px;color:var(--c-text-sub);">🎤 长按 <b>音量+</b>（或键盘 <span class="kbd">+</span>）：一边播报当前界面，一边<b>持续收听</b></span>
+    <span style="font-size:12px;color:var(--c-text-sub);">🗣 直接说 <b>「开始」</b>等指令 → 立刻执行并语音确认（可<b>连续说</b>）</span>
+    <span style="font-size:12px;color:var(--c-text-sub);">🖐 <b>松开 = 停止收音</b>（已触发的语音会播完）</span>
+    <span style="font-size:12px;color:var(--c-text-sub);">🚨 按 <b>音量−</b>（或键盘 <span class="kbd">-</span> / <span class="kbd">Esc</span>）急停</span>
+    <span style="font-size:12px;color:var(--c-text-sub);">可以说：<b>公交</b> / <b>开始</b>（选站向导）/ <b>在图书馆上车</b> / <b>打车去体育馆</b> / <b>帮助</b></span>
+  </div>
+
+  <p class="mt-4 text-xs" style="color: var(--c-text-sub);">TRAE on Campus @ 南方科技大学 · 无障碍公益黑客松 Demo</p>
+
+  <script src="data/mock.js"></script>
+  <script src="js/app.js"></script>
+</body>
+
+</html>

@@ -100,6 +100,7 @@ var PRIORITY = { PANIC: 0, SAFETY: 1, CONFIRM: 2, NORMAL: 3 };
 
 var speechQueue = [];
 var speaking = false;
+var speechRun = 0;            // 每次播报的唯一令牌：抢占后旧回调靠它作废
 var currentSpeechText = '';   // 正在播报的文本（用于过滤麦克风听到的"回声"）
 var currentSpeechKind = '';   // 正在播报的类型：'guide'(界面说明) / 'reminder'(提醒) / 'normal'
 
@@ -135,6 +136,7 @@ function speak(text, priority, onDone, kind) {
     if (speaking || speechQueue.length > 0) {
       speechQueue = [];
       speaking = false;
+      speechRun += 1;               // 让"正在播的那句"的回调作废
       try { window.speechSynthesis.cancel(); } catch (e) { }
       item.needGap = true;          // cancel 过 → 要留足间隔再开口
     }
@@ -151,12 +153,15 @@ function pumpSpeech() {
   if (speaking) return;
   if (!speechQueue.length) { maybeResumeRecognition(); return; }
   var item = speechQueue.shift();
+  var run = ++speechRun;                 // 本次播报的令牌
   speaking = true;
   currentSpeechText = item.text;
   currentSpeechKind = item.kind || 'normal';
   if (item.priority <= PRIORITY.SAFETY) beep('alert'); else beep('start');
 
   var done = function () {
+    if (run !== speechRun) return;       // 已被抢占 → 这个过期回调直接作废
+    item.finished = true;                // 标记：已经正常播完，别让看门狗再补播
     speaking = false;
     currentSpeechText = '';
     currentSpeechKind = '';
@@ -171,11 +176,12 @@ function pumpSpeech() {
   else if (item.priority <= PRIORITY.SAFETY) delay = 60;
   else delay = UI_CONFIG.voice.beepGapMs;
   setTimeout(function () {
-    if (!speaking) return;   // 期间被急停了
+    if (run !== speechRun) return;       // 已被抢占，别再出声
     var u;
     try {
       u = new SpeechSynthesisUtterance(item.text);
       u.lang = 'zh-CN'; u.rate = UI_CONFIG.voice.rate || 1; u.pitch = 1;
+      u.onstart = function () { item.started = true; };   // 真开口了 → 看门狗不用管
       u.onend = done;
       u.onerror = done;
       try { window.speechSynthesis.resume(); } catch (e) { }   // Chrome 有时卡在 paused，先解除
@@ -184,7 +190,7 @@ function pumpSpeech() {
 
     // 看门狗：若 1.2 秒后仍没有在播，说明被 Chrome 吞了 → 重试一次
     setTimeout(function () {
-      if (!speaking || item.retried) return;
+      if (run !== speechRun || item.retried || item.started || item.finished) return;
       var ss = window.speechSynthesis;
       if (!ss) return;
       var busy = ss.speaking || ss.pending;
@@ -192,7 +198,7 @@ function pumpSpeech() {
       item.retried = true;
       // 注意：这里不要再 cancel()，否则又会踩进同一个坑；直接 resume + speak 补播
       setTimeout(function () {
-        if (!speaking) return;
+        if (run !== speechRun) return;
         try { ss.resume(); } catch (e) { }
         try { ss.speak(u); } catch (e) { done(); }
       }, 300);
@@ -204,6 +210,7 @@ function pumpSpeech() {
 function silence() {
   speechQueue = [];
   speaking = false;
+  speechRun += 1;               // 让所有在途回调作废
   currentSpeechText = '';
   currentSpeechKind = '';
   try { window.speechSynthesis.cancel(); } catch (e) { }
@@ -1189,10 +1196,25 @@ function bind() {
 /* ============================================================
  * ⑫ 启动
  * ============================================================ */
+/** 自检：如果浏览器/系统没有可用的中文语音包，直接在界面提示（否则会"静默无声"） */
+function checkTTS() {
+  if (!('speechSynthesis' in window)) { setHint('⚠️ 此浏览器不支持语音合成，播报将无声'); return; }
+  var vs = [];
+  try { vs = window.speechSynthesis.getVoices() || []; } catch (e) { vs = []; }
+  if (!vs.length) {
+    // Chrome 首次要等 voiceschanged 才有列表
+    try { window.speechSynthesis.onvoiceschanged = checkTTS; } catch (e) { }
+    return;
+  }
+  var zh = vs.filter(function (v) { return /^zh|Chinese/i.test(v.lang || '') || /中文|普通话/i.test(v.name || ''); });
+  if (!zh.length) setHint('⚠️ 系统未安装中文语音包，可能听不到播报（Windows: 设置→时间和语言→语音）');
+}
+
 document.addEventListener('DOMContentLoaded', function () {
   applyUIConfig();
   fillSelects();
   bind();
   activeLogId = 'bus-log';
   setVoiceState('idle');
+  checkTTS();
 });

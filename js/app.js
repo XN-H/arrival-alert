@@ -27,6 +27,8 @@ var UI_CONFIG = {
     height: 200,
     busTickMs: 700,
     busFastTickMs: 150,
+    busDwellMs: 4500,       // 到站停靠时长（正常速度）
+    busFastDwellMs: 1800,   // 到站停靠时长（加速演示）
     taxiTickMs: 2600,
     taxiFastTickMs: 900
   },
@@ -127,10 +129,16 @@ function speak(text, priority, onDone, kind) {
   }
 
   if (priority <= PRIORITY.SAFETY) {
-    speechQueue = [];
-    speaking = false;
-    try { window.speechSynthesis.cancel(); } catch (e) { }
-    speechQueue.push({ text: text, priority: priority, onDone: onDone, kind: kind });
+    var item = { text: text, priority: priority, onDone: onDone, kind: kind };
+    // 只有确实有语音在播/在排队时才需要"打断"。
+    // 若本来就没声，就不要调用 cancel() —— 否则会踩进 Chrome "cancel 后 speak 被吞"的坑。
+    if (speaking || speechQueue.length > 0) {
+      speechQueue = [];
+      speaking = false;
+      try { window.speechSynthesis.cancel(); } catch (e) { }
+      item.needGap = true;          // cancel 过 → 要留足间隔再开口
+    }
+    speechQueue.push(item);
     pumpSpeech();
     return;
   }
@@ -156,16 +164,39 @@ function pumpSpeech() {
     pumpSpeech();
   };
 
-  var delay = item.priority <= PRIORITY.SAFETY ? 40 : UI_CONFIG.voice.beepGapMs;
+  // 抢占播报（上车提醒/到站提醒）在 Chrome 里有个坑：
+  // cancel() 之后立刻 speak()，新句子会被静默丢弃。所以必要时留足间隔，并先 resume() 解除 paused。
+  var delay;
+  if (item.needGap) delay = 350;
+  else if (item.priority <= PRIORITY.SAFETY) delay = 60;
+  else delay = UI_CONFIG.voice.beepGapMs;
   setTimeout(function () {
     if (!speaking) return;   // 期间被急停了
+    var u;
     try {
-      var u = new SpeechSynthesisUtterance(item.text);
+      u = new SpeechSynthesisUtterance(item.text);
       u.lang = 'zh-CN'; u.rate = UI_CONFIG.voice.rate || 1; u.pitch = 1;
       u.onend = done;
       u.onerror = done;
+      try { window.speechSynthesis.resume(); } catch (e) { }   // Chrome 有时卡在 paused，先解除
       window.speechSynthesis.speak(u);
-    } catch (e) { done(); }
+    } catch (e) { done(); return; }
+
+    // 看门狗：若 1.2 秒后仍没有在播，说明被 Chrome 吞了 → 重试一次
+    setTimeout(function () {
+      if (!speaking || item.retried) return;
+      var ss = window.speechSynthesis;
+      if (!ss) return;
+      var busy = ss.speaking || ss.pending;
+      if (busy) return;
+      item.retried = true;
+      // 注意：这里不要再 cancel()，否则又会踩进同一个坑；直接 resume + speak 补播
+      setTimeout(function () {
+        if (!speaking) return;
+        try { ss.resume(); } catch (e) { }
+        try { ss.speak(u); } catch (e) { done(); }
+      }, 300);
+    }, 1200);
   }, delay);
 }
 
@@ -366,7 +397,7 @@ function renderTaxiRoute() {
  * ============================================================ */
 var S = MOCK_BUS_ROUTE.samplesPerSegment;
 
-var busState = { running: false, cur: 0, boarded: false, fast: false, timer: null, lastText: '', boardIndex: 2, alightIndex: 5 };
+var busState = { running: false, cur: 0, boarded: false, fast: false, timer: null, lastText: '', boardIndex: 2, alightIndex: 5, dwellUntil: 0, finishAfterDwell: false };
 
 function busStopName(i) {
   var s = MOCK_BUS_ROUTE.stops[i];
@@ -387,6 +418,7 @@ function fillSelects() {
 }
 
 function busTickMs() { return busState.fast ? UI_CONFIG.map.busFastTickMs : UI_CONFIG.map.busTickMs; }
+function busDwellMs() { return busState.fast ? UI_CONFIG.map.busFastDwellMs : UI_CONFIG.map.busDwellMs; }
 
 function updateBusStatus(main, sub) {
   var m = document.getElementById('bus-status');
@@ -443,6 +475,18 @@ function startBus() {
 }
 
 function tickBus() {
+  // 到站停靠：这几秒车停着不动，专门用来把到站提醒播完
+  if (busState.dwellUntil) {
+    if (Date.now() < busState.dwellUntil) return;
+    busState.dwellUntil = 0;
+    if (busState.finishAfterDwell) {
+      busState.finishAfterDwell = false;
+      updateBusStatus('提醒结束', '祝您出行顺利');
+      stopBus(true);
+      return;
+    }
+  }
+
   busState.cur += 1;
   setBusMarker(busState.cur);
 
@@ -460,10 +504,11 @@ function handleBusStop(k) {
   if (!busState.boarded) {
     if (k === bi) {
       busState.boarded = true;
+      busState.dwellUntil = Date.now() + busDwellMs();      // 停靠几秒
       busState.lastText = '上车提醒：车已到站，' + busStopName(bi) + '，请上车，注意台阶。';
       speak(busState.lastText, PRIORITY.SAFETY, null, 'reminder');
       buzz([200, 100, 200]);
-      updateBusStatus('上车提醒 · 车已到站：' + busStopName(bi), '请上车');
+      updateBusStatus('上车提醒 · 车已到站：' + busStopName(bi), '车辆停靠中，请上车');
     } else if (k < bi) {
       var gap = bi - k;
       busState.lastText = '还有 ' + gap + ' 站到达上车站' + busStopName(bi) + '，请准备上车。';
@@ -475,11 +520,12 @@ function handleBusStop(k) {
 
   var gap2 = ai - k;
   if (gap2 <= 0) {
-    busState.lastText = '到站提醒：已到达终点站' + busStopName(ai) + '，请下车，请注意脚下台阶。提醒结束，祝您出行顺利。';
+    busState.dwellUntil = Date.now() + busDwellMs();         // 停靠几秒，播完到站提醒再收尾
+    busState.finishAfterDwell = true;
+    busState.lastText = '到站提醒：已到达' + busStopName(ai) + '，请下车，请注意脚下台阶。';
     speak(busState.lastText, PRIORITY.SAFETY, null, 'reminder');
     buzz([300, 120, 300, 120, 300]);
-    updateBusStatus('到站提醒 · 已到达：' + busStopName(ai), '提醒结束，祝您出行顺利');
-    stopBus(true);
+    updateBusStatus('到站提醒 · 已到达：' + busStopName(ai), '车辆停靠中，请下车');
   } else if (gap2 === 2) {
     busState.lastText = '还有 2 站到达下车站' + busStopName(ai) + '，请准备下车。';
     speak(busState.lastText, PRIORITY.NORMAL, null, 'reminder');
@@ -499,6 +545,8 @@ function handleBusStop(k) {
 function stopBus(silent) {
   if (busState.timer) { clearInterval(busState.timer); busState.timer = null; }
   busState.running = false;
+  busState.dwellUntil = 0;
+  busState.finishAfterDwell = false;
   var startBtn = document.getElementById('btn-start');
   var stopBtn = document.getElementById('btn-stop');
   if (startBtn) startBtn.disabled = false;
